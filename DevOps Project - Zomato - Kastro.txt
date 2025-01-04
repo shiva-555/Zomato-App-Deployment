@@ -76,6 +76,8 @@ Verifiy Trivy installation: trivy --version
 Make sure to Login to DockerHub account in browser
 docker login -u <dockerhubusername> <password>
 curl -sSfL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh -s -- -b /usr/local/bin
+to execute the docker scoute we need to give the permission 
+sudo chmod 777 /var/run/docker.sock
 <Follow the process as explained in the video>
 
 9. Install SonarQube using Docker
