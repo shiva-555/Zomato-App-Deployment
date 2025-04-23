@@ -1,115 +1,108 @@
 pipeline {
     agent any
-
     tools {
         jdk 'jdk17'
-        nodejs 'NodeJS-23'
+        nodejs 'node23'
     }
-
     environment {
-        SCANNER_HOME = tool 'sonar-scanner'
+        SCANNER_HOME=tool 'sonar-scanner'
     }
-
     stages {
-        stage("Clean Workspace") {
+        stage ("clean workspace") {
             steps {
                 cleanWs()
             }
         }
-
-        stage("Checkout Code") {
+        stage ("Git Checkout") {
             steps {
-                checkout scm
+                git 'https://github.com/KastroVKiran/Zomato-Project-Kastro.git'
             }
         }
-
-        stage("Debug Workspace Structure") {
-            steps {
-                script {
-                    sh "ls -la"
-                    sh "ls -la front-end"
-                    sh "ls -la Cart"
-                    sh "ls -la Product"
-                    sh "ls -la User"
+        stage("Sonarqube Analysis"){
+            steps{
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
+                    -Dsonar.projectKey=zomato '''
                 }
             }
         }
-
-        stage("Install Dependencies - Frontend") {
-            steps {
-                dir('front-end') {
-                    sh 'npm install'
+        stage("Code Quality Gate"){
+           steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
                 }
+            } 
+        }
+        stage("Install NPM Dependencies") {
+            steps {
+                sh "npm install"
             }
         }
-
-        stage("Install Dependencies - Backend Services") {
+        stage('OWASP FS SCAN') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+    }
+}
+        stage ("Trivy File Scan") {
+            steps {
+                sh "trivy fs . > trivy.txt"
+            }
+        }
+        stage ("Build Docker Image") {
+            steps {
+                sh "docker build -t zomato ."
+            }
+        }
+        stage ("Tag & Push to DockerHub") {
             steps {
                 script {
-                    def services = ['Cart', 'Product', 'User']
-                    for (svc in services) {
-                        dir(svc) {
-                            sh 'npm install'
-                        }
+                    withDockerRegistry(credentialsId: 'docker') {
+                        sh "docker tag zomato kastrov/zomato:latest "
+                        sh "docker push kastrov/zomato:latest "
                     }
                 }
             }
         }
-
-        stage("SonarQube Analysis") {
+        stage('Docker Scout Image') {
             steps {
-                script {
-                    def projects = ['front-end', 'Cart', 'Product', 'User']
-                    for (project in projects) {
-                        dir(project) {
-                            withSonarQubeEnv('sonar-server') {
-                                sh '''$SCANNER_HOME/bin/sonar-scanner \
-                                    -Dsonar.projectName=''' + project + ''' \
-                                    -Dsonar.projectKey=''' + project + ''' \
-                                    -Dsonar.sources=.'''
-                            }
-                        }
-                    }
+                script{
+                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
+                       sh 'docker-scout quickview kastrov/zomato:latest'
+                       sh 'docker-scout cves kastrov/zomato:latest'
+                       sh 'docker-scout recommendations kastrov/zomato:latest'
+                   }
                 }
             }
         }
-
-        stage('OWASP Dependency Check') {
+        stage ("Deploy to Container") {
             steps {
-                script {
-                    def paths = ['front-end', 'Cart', 'Product', 'User']
-                    for (path in paths) {
-                        dir(path) {
-                            dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
-                        }
-                    }
-                }
-            }
-        }
-
-        stage("Trivy Scan") {
-            steps {
-                script {
-                    def paths = ['front-end', 'Cart', 'Product', 'User']
-                    for (path in paths) {
-                        dir(path) {
-                            sh "trivy fs . > trivy-${path}.txt"
-                        }
-                    }
-                }
+                sh 'docker run -d --name zomato -p 3000:3000 kastrov/zomato:latest'
             }
         }
     }
-
     post {
-        always {
-            echo "Pipeline completed (success, failure, or abort)"
-        }
-        success {
-            echo "Pipeline completed successfully"
-        }
-        failure {
-            echo "Pipeline failed"
+    always {
+        emailext attachLog: true,
+            subject: "'${currentBuild.result}'",
+            body: """
+                <html>
+                <body>
+                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
+                    </div>
+                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
+                    </div>
+                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
+                    </div>
+                </body>
+                </html>
+            """,
+            to: 'kastrokiran@gmail.com',
+            mimeType: 'text/html',
+            attachmentsPattern: 'trivy.txt'
         }
     }
 }
