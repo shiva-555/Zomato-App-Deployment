@@ -1,108 +1,115 @@
 pipeline {
     agent any
+
     tools {
         jdk 'jdk17'
-        nodejs 'node23'
+        nodejs 'NodeJS-23'
     }
+
     environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+        SCANNER_HOME = tool 'sonar-scanner'
     }
+
     stages {
-        stage ("clean workspace") {
+        stage("Clean Workspace") {
             steps {
                 cleanWs()
             }
         }
-        stage ("Git Checkout") {
+
+        stage("Checkout Code") {
             steps {
-                git 'https://github.com/KastroVKiran/Zomato-Project-Kastro.git'
+                checkout scm
             }
         }
-        stage("Sonarqube Analysis"){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
-                    -Dsonar.projectKey=zomato '''
+
+        stage("Debug Workspace Structure") {
+            steps {
+                script {
+                    sh "ls -la"
+                    sh "ls -la front-end"
+                    sh "ls -la Cart"
+                    sh "ls -la Product"
+                    sh "ls -la User"
                 }
             }
         }
-        stage("Code Quality Gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
+
+        stage("Install Dependencies - Frontend") {
+            steps {
+                dir('front-end') {
+                    sh 'npm install'
                 }
-            } 
-        }
-        stage("Install NPM Dependencies") {
-            steps {
-                sh "npm install"
             }
         }
-        stage('OWASP FS SCAN') {
-            steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-    }
-}
-        stage ("Trivy File Scan") {
-            steps {
-                sh "trivy fs . > trivy.txt"
-            }
-        }
-        stage ("Build Docker Image") {
-            steps {
-                sh "docker build -t zomato ."
-            }
-        }
-        stage ("Tag & Push to DockerHub") {
+
+        stage("Install Dependencies - Backend Services") {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker') {
-                        sh "docker tag zomato kastrov/zomato:latest "
-                        sh "docker push kastrov/zomato:latest "
+                    def services = ['Cart', 'Product', 'User']
+                    for (svc in services) {
+                        dir(svc) {
+                            sh 'npm install'
+                        }
                     }
                 }
             }
         }
-        stage('Docker Scout Image') {
+
+        stage("SonarQube Analysis") {
             steps {
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh 'docker-scout quickview kastrov/zomato:latest'
-                       sh 'docker-scout cves kastrov/zomato:latest'
-                       sh 'docker-scout recommendations kastrov/zomato:latest'
-                   }
+                script {
+                    def projects = ['front-end', 'Cart', 'Product', 'User']
+                    for (project in projects) {
+                        dir(project) {
+                            withSonarQubeEnv('sonar-server') {
+                                sh '''$SCANNER_HOME/bin/sonar-scanner \
+                                    -Dsonar.projectName=''' + project + ''' \
+                                    -Dsonar.projectKey=''' + project + ''' \
+                                    -Dsonar.sources=.'''
+                            }
+                        }
+                    }
                 }
             }
         }
-        stage ("Deploy to Container") {
+
+        stage('OWASP Dependency Check') {
             steps {
-                sh 'docker run -d --name zomato -p 3000:3000 kastrov/zomato:latest'
+                script {
+                    def paths = ['front-end', 'Cart', 'Product', 'User']
+                    for (path in paths) {
+                        dir(path) {
+                            dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage("Trivy Scan") {
+            steps {
+                script {
+                    def paths = ['front-end', 'Cart', 'Product', 'User']
+                    for (path in paths) {
+                        dir(path) {
+                            sh "trivy fs . > trivy-${path}.txt"
+                        }
+                    }
+                }
             }
         }
     }
+
     post {
-    always {
-        emailext attachLog: true,
-            subject: "'${currentBuild.result}'",
-            body: """
-                <html>
-                <body>
-                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                    </div>
-                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                    </div>
-                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
-                    </div>
-                </body>
-                </html>
-            """,
-            to: 'kastrokiran@gmail.com',
-            mimeType: 'text/html',
-            attachmentsPattern: 'trivy.txt'
+        always {
+            echo "Pipeline completed (success, failure, or abort)"
+        }
+        success {
+            echo "Pipeline completed successfully"
+        }
+        failure {
+            echo "Pipeline failed"
         }
     }
 }
